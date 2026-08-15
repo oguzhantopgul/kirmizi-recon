@@ -1,0 +1,34 @@
+# Example engagement (scope) file for kirmizi-recon.
+# Copy to engagement.yaml (git-ignored) and point --engagement / $KIRMIZI_ENGAGEMENT at it.
+#
+# The `authorization` field is your record of who authorized this test (SOW /
+# ticket). It gates OUR scope enforcement and audit trail — it does NOT change
+# what the model will or won't produce.
+
+mode: active                 # passive (default) | active
+authorization: "PENTEST-1234 / signed SOW 2026-08"
+in_scope:
+  - acme.example.com
+  - "*.acme.example.com"
+ai_endpoints:
+  - https://acme.example.com/chat
+max_active_requests: 200
+rate_limit_per_sec: 2.0
+trust_local: false
+
+# Optional: describe the target here instead of on the CLI.
+target:
+  name: acme-chatbot
+  domains:
+    - acme.example.com
+  objective: >
+    Fingerprint the customer-support chatbot and map the surrounding web/API
+    attack surface.
+  ai_endpoints:
+    - url: https://acme.example.com/chat
+      method: POST
+      headers:
+        Authorization: "Bearer REPLACE_ME"
+      request_template: '{"messages": [{"role": "user", "content": {prompt}}]}'
+      response_path: "choices.0.message.content"
+      label: support-chat
