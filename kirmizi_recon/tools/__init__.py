@@ -21,6 +21,7 @@ TOOL_ACTIONS: dict[str, str] = {
     "dns_lookup": "passive",
     "ct_subdomains": "passive",
     "rdap_lookup": "passive",
+    "port_scan": "active",
     "http_fingerprint": "active",
     "tls_inspect": "active",
     "ai_probe": "active",
@@ -54,6 +55,31 @@ _GATHERER_DEFS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {"domain": {"type": "string"}},
             "required": ["domain"],
+        },
+    },
+    {
+        "name": "port_scan",
+        "description": "Enumerate open TCP ports and services on an in-scope host "
+        "or IP — a good FIRST active step to map the attack surface. Uses nmap "
+        "service/version detection when available; a limited connect-scan "
+        "fallback (open ports + banners, no versions) otherwise. ACTIVE — sends "
+        "traffic to the target; the harness resolves the host and authorizes the "
+        "IP against the scope (hostname, IP, or CIDR).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Hostname or IP to scan."},
+                "ports": {
+                    "type": "string",
+                    "description": "'top-100' (default), 'top-1000', 'web', or a "
+                    "numeric spec like '22,80,443' or '1-1024'.",
+                },
+                "service_detection": {
+                    "type": "boolean",
+                    "description": "Enable service/version detection. Default true.",
+                },
+            },
+            "required": ["target"],
         },
     },
     {
@@ -146,6 +172,8 @@ class ToolRegistry:
                     name, tool_input, host, is_url=("://" in host),
                     run=lambda: infra.tls_inspect(host, int(tool_input.get("port", 443))),
                 )
+            if name == "port_scan":
+                return self._port_scan(tool_input)
             if name == "ai_probe":
                 return self._ai_probe(tool_input)
             return (f"unknown tool '{name}'", True)
@@ -168,6 +196,20 @@ class ToolRegistry:
             self._log(name, args, "REFUSED")
             return (decision.reason, True)
         return self._ok(name, args, run())
+
+    def _port_scan(self, args: dict[str, Any]) -> tuple[str, bool]:
+        target = args["target"]
+        decision = self.enforcer.check_scan(target)
+        if not decision.allowed:
+            self._log("port_scan", args, "REFUSED")
+            return (decision.reason, True)
+        result = infra.port_scan(
+            decision.resolved_ip,
+            args.get("ports", "top-100"),
+            bool(args.get("service_detection", True)),
+        )
+        self._log("port_scan", {**args, "ip": decision.resolved_ip}, "ok")
+        return (json.dumps(result, default=str), False)
 
     def _ai_probe(self, args: dict[str, Any]) -> tuple[str, bool]:
         endpoint_url = args.get("endpoint_url", "")

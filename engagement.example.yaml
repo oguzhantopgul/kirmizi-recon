@@ -10,6 +10,8 @@ authorization: "PENTEST-1234 / signed SOW 2026-08"
 in_scope:
   - acme.example.com
   - "*.acme.example.com"
+  - 203.0.113.0/24        # IPs/CIDRs authorize port scans against those addresses
+  - 198.51.100.10
 ai_endpoints:
   - https://acme.example.com/chat
 max_active_requests: 200

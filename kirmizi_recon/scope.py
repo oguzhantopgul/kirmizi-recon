@@ -27,11 +27,51 @@ from .schemas import ReconScope
 class Decision:
     allowed: bool
     reason: str = ""
+    resolved_ip: str = ""
 
 
 def host_from_url(url: str) -> str:
     parsed = urlparse(url if "://" in url else f"//{url}", scheme="https")
     return (parsed.hostname or "").lower()
+
+
+def is_ip_literal(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_host(host: str) -> str:
+    """Resolve a hostname to a single IP, or '' on failure. Literal IPs pass
+    through unchanged."""
+    if is_ip_literal(host):
+        return host
+    try:
+        return socket.gethostbyname(host)
+    except OSError:
+        return ""
+
+
+def ip_in_scope(ip: str, patterns: list[str]) -> bool:
+    """True if ``ip`` falls within any IP or CIDR entry among the patterns.
+    Non-IP (hostname) patterns are ignored here."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for pat in patterns:
+        pat = pat.strip()
+        try:
+            if "/" in pat:
+                if addr in ipaddress.ip_network(pat, strict=False):
+                    return True
+            elif ipaddress.ip_address(pat) == addr:
+                return True
+        except ValueError:
+            continue  # hostname pattern — not our concern
+    return False
 
 
 def is_local_host(host: str) -> bool:
@@ -153,6 +193,47 @@ class ScopeEnforcer:
                 + ").",
             )
 
+        refusal = self._consume_active()
+        return refusal if refusal is not None else Decision(True)
+
+    def check_scan(self, target: str) -> Decision:
+        """Authorize a port scan of ``target`` (hostname or IP). Resolves to an
+        IP and authorizes by hostname pattern OR IP/CIDR membership OR
+        trust_local. On success, ``Decision.resolved_ip`` carries the IP to
+        scan. Budgeted + rate-limited like any active action."""
+        if self.scope.mode != "active":
+            return Decision(
+                False,
+                "refused: passive mode. Port scanning requires --active plus an "
+                "in-scope, authorized target.",
+            )
+
+        host = host_from_url(target) if "://" in target else target.strip().lower().rstrip(".")
+        ip = resolve_host(host)
+        if not ip:
+            return Decision(False, f"refused: could not resolve '{host}' to an IP.")
+
+        local_ok = self.scope.trust_local and (is_local_host(host) or is_local_host(ip))
+        authorized = (
+            local_ok
+            or any(host_matches(host, p) for p in self.scope.in_scope)
+            or ip_in_scope(ip, self.scope.in_scope)
+        )
+        if not authorized:
+            return Decision(
+                False,
+                f"refused: '{host}' (-> {ip}) is not in the authorized scope. "
+                f"Add the host, its IP, or a CIDR to in_scope "
+                f"(current: {self.scope.in_scope or '[]'}).",
+            )
+
+        refusal = self._consume_active()
+        return refusal if refusal is not None else Decision(True, resolved_ip=ip)
+
+    # -- shared budget + rate limiting -----------------------------------
+    def _consume_active(self) -> Decision | None:
+        """Charge one active request against the budget and rate limiter.
+        Returns a refusal Decision if the budget is exhausted, else None."""
         with self._lock:
             if self._active_count >= self.scope.max_active_requests:
                 return Decision(
@@ -161,6 +242,5 @@ class ScopeEnforcer:
                     f"({self.scope.max_active_requests}).",
                 )
             self._active_count += 1
-
         self._bucket.acquire()
-        return Decision(True)
+        return None

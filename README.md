@@ -4,7 +4,8 @@
 reconnaissance on a target: the **AI application** (model fingerprinting,
 guardrail/refusal mapping, prompt-leak indicators, exposed tools, injection
 surface) **and** its surrounding **infrastructure / OSINT** (DNS, subdomains,
-HTTP/TLS fingerprinting, RDAP). It produces a structured `ReconReport` intended
+port/service enumeration, HTTP/TLS fingerprinting, RDAP). It produces a
+structured `ReconReport` intended
 to feed downstream agents (attack planning, exploitation) in a future
 multi-agent AI red-teaming platform — initially via direct calls, eventually
 over **A2A**.
@@ -33,10 +34,16 @@ ReconAgent.run(target: ReconTarget, scope: ReconScope) -> ReconReport
 ## Install
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate   # Python 3.10+
 pip install -e ".[dev]"
 # Auth: export ANTHROPIC_API_KEY=...   (or run `ant auth login`)
 ```
+
+**nmap (recommended).** The `port_scan` tool uses `nmap -sV` for real
+service/version enumeration when the `nmap` binary is on `PATH`. Without it, it
+falls back to a pure-Python TCP connect scan (open ports + light banners, **no
+version detection**), and results are labeled `degraded`. For trustworthy
+service enumeration, install nmap (or bundle it in your container image).
 
 ## Usage
 
@@ -71,7 +78,10 @@ Active actions require **both**:
 
 1. **Intent** — the `--active` flag (or `mode: active` in the engagement file).
 2. **Permission** — the specific target is in scope (`--in-scope` / `in_scope`,
-   or auto-derived from the `--domain`/`--ai-endpoint` you named).
+   or auto-derived from the `--domain`/`--ai-endpoint` you named). Scope entries
+   can be hostnames (`acme.example.com`, `*.acme.example.com`), bare IPs, or
+   CIDRs (`203.0.113.0/24`). Port scans resolve the host and authorize the
+   resulting IP against these entries.
 
 Plus a **non-empty `authorization`** reference (unless `--trust-local` for
 localhost/RFC-1918 targets you own). Requests are rate-limited
@@ -123,6 +133,6 @@ kirmizi_recon/
   config.py    # settings (model, effort, ...)
   report.py    # ReconReport -> json/markdown
   cli.py       # typer CLI over the core
-  tools/       # infra (DNS/CT/HTTP/TLS/RDAP), ai_target (ai_probe), report (finalize)
+  tools/       # infra (DNS/CT/RDAP/port_scan/HTTP/TLS), ai_target (ai_probe), report (finalize)
 tools/mock_target.py   # local mock AI endpoint for e2e
 ```

@@ -4,6 +4,8 @@ from kirmizi_recon.schemas import ReconScope
 from kirmizi_recon.scope import (
     ScopeEnforcer,
     host_matches,
+    ip_in_scope,
+    is_ip_literal,
     is_local_host,
 )
 
@@ -83,3 +85,56 @@ def test_trust_local_allows_local_without_authorization():
 def test_active_without_authorization_is_rejected_at_construction():
     with pytest.raises(ValueError):
         ReconScope(mode="active", in_scope=["acme.example.com"], authorization="")
+
+
+# --- IP / CIDR support (port scanning) ------------------------------------
+
+
+def test_is_ip_literal_and_ip_in_scope():
+    assert is_ip_literal("203.0.113.5")
+    assert not is_ip_literal("acme.example.com")
+    assert ip_in_scope("203.0.113.5", ["203.0.113.0/24"])
+    assert ip_in_scope("203.0.113.5", ["203.0.113.5"])
+    assert not ip_in_scope("198.51.100.9", ["203.0.113.0/24"])
+    # Hostname patterns are ignored by ip_in_scope.
+    assert not ip_in_scope("203.0.113.5", ["*.acme.example.com"])
+
+
+def test_check_scan_cidr_authorization():
+    scope = ReconScope(
+        mode="active",
+        in_scope=["203.0.113.0/24"],
+        authorization="PENTEST-1",
+        rate_limit_per_sec=1000.0,
+    )
+    enf = ScopeEnforcer(scope)
+    ok = enf.check_scan("203.0.113.5")  # IP literal -> no DNS
+    assert ok.allowed and ok.resolved_ip == "203.0.113.5"
+    assert not enf.check_scan("198.51.100.9").allowed
+
+
+def test_check_scan_passive_refused():
+    enf = ScopeEnforcer(ReconScope(mode="passive"))
+    d = enf.check_scan("203.0.113.5")
+    assert not d.allowed and "passive mode" in d.reason
+
+
+def test_check_scan_trust_local():
+    enf = ScopeEnforcer(
+        ReconScope(mode="active", trust_local=True, rate_limit_per_sec=1000.0)
+    )
+    d = enf.check_scan("127.0.0.1")
+    assert d.allowed and d.resolved_ip == "127.0.0.1"
+
+
+def test_check_scan_budget_shared_with_active():
+    scope = ReconScope(
+        mode="active",
+        in_scope=["203.0.113.0/24"],
+        authorization="PENTEST-1",
+        max_active_requests=1,
+        rate_limit_per_sec=1000.0,
+    )
+    enf = ScopeEnforcer(scope)
+    assert enf.check_scan("203.0.113.5").allowed
+    assert not enf.check_scan("203.0.113.6").allowed  # budget exhausted

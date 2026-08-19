@@ -66,8 +66,9 @@ def main(
         "(default: $KIRMIZI_ENGAGEMENT)."
     ),
     in_scope: list[str] = typer.Option(
-        [], "--in-scope", help="Authorized host/domain pattern for active probing "
-        "(repeatable; supports '*.domain')."
+        [], "--in-scope", help="Authorized target for active probing (repeatable): "
+        "a host/domain ('*.domain' wildcard ok), a bare IP, or a CIDR "
+        "(e.g. 203.0.113.0/24)."
     ),
     authorization: Optional[str] = typer.Option(
         None, "--authorization", "--auth", help="Engagement/SOW reference "
