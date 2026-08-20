@@ -4,8 +4,8 @@
 reconnaissance on a target: the **AI application** (model fingerprinting,
 guardrail/refusal mapping, prompt-leak indicators, exposed tools, injection
 surface) **and** its surrounding **infrastructure / OSINT** (DNS, subdomains,
-port/service enumeration, HTTP/TLS fingerprinting, RDAP). It produces a
-structured `ReconReport` intended
+port/service enumeration, API/endpoint enumeration, HTTP/TLS fingerprinting,
+RDAP). It produces a structured `ReconReport` intended
 to feed downstream agents (attack planning, exploitation) in a future
 multi-agent AI red-teaming platform — initially via direct calls, eventually
 over **A2A**.
@@ -115,6 +115,20 @@ kirmizi-recon --active --trust-local \
 pytest        # scope enforcement, schema, tool parsers (no live network)
 ```
 
+## Endpoint wordlist
+
+`endpoint_scan` probes a curated ~385-path wordlist (`kirmizi_recon/wordlists/`)
+covering AI/LLM inference APIs (OpenAI-compatible, Ollama, HF TGI, vLLM, Triton,
+TensorFlow Serving, MLflow, LangServe, Anthropic, MCP/Gradio), auth, API
+docs/OpenAPI, GraphQL IDEs, Spring Boot Actuator, admin/debug consoles,
+`.well-known` (OIDC/OAuth/AI-plugin/MCP) manifests, and source/secret exposure.
+The base list came from this project's original endpoint scanner and was
+augmented with high-value paths from
+[chrislockard/api_wordlist](https://github.com/chrislockard/api_wordlist) and
+[danielmiessler/SecLists](https://github.com/danielmiessler/SecLists). The agent
+can also pass `extra_paths`, or you can supply your own list via
+`wordlists.load_wordlist()`.
+
 ## A2A roadmap
 
 `ReconAgent.run` is the handler a future A2A `AgentExecutor` will wrap;
@@ -133,6 +147,7 @@ kirmizi_recon/
   config.py    # settings (model, effort, ...)
   report.py    # ReconReport -> json/markdown
   cli.py       # typer CLI over the core
-  tools/       # infra (DNS/CT/RDAP/port_scan/HTTP/TLS), ai_target (ai_probe), report (finalize)
+  tools/       # infra (DNS/CT/RDAP/port_scan/endpoint_scan/HTTP/TLS), ai_target (ai_probe), report (finalize)
+  wordlists/   # curated API/endpoint wordlist used by endpoint_scan
 tools/mock_target.py   # local mock AI endpoint for e2e
 ```

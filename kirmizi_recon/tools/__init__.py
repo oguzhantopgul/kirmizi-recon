@@ -13,6 +13,7 @@ from typing import Any
 
 from ..schemas import ReconTarget
 from ..scope import ScopeEnforcer
+from ..wordlists import API_ENDPOINTS
 from . import ai_target, infra
 from .report import FINALIZE_TOOL, FINALIZE_TOOL_NAME
 
@@ -22,6 +23,7 @@ TOOL_ACTIONS: dict[str, str] = {
     "ct_subdomains": "passive",
     "rdap_lookup": "passive",
     "port_scan": "active",
+    "endpoint_scan": "active",
     "http_fingerprint": "active",
     "tls_inspect": "active",
     "ai_probe": "active",
@@ -80,6 +82,38 @@ _GATHERER_DEFS: list[dict[str, Any]] = [
                 },
             },
             "required": ["target"],
+        },
+    },
+    {
+        "name": "endpoint_scan",
+        "description": "Probe a base URL against a curated wordlist of ~385 "
+        "API/app endpoints (AI/LLM inference APIs, auth, API docs/OpenAPI, "
+        "GraphQL, Spring Boot Actuator, admin/debug consoles, .well-known "
+        "OIDC/AI-plugin/MCP manifests, source/secret exposure) and group the "
+        "HTTP responses. Reveals the API attack surface: which endpoints exist "
+        "(2xx/3xx), which are protected (401/403), and which leak info. ACTIVE — "
+        "sends many requests to the target (rate-limited); the base URL host "
+        "must be in the authorized scope.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "base_url": {
+                    "type": "string",
+                    "description": "Base URL to scan, e.g. https://api.acme.example.com",
+                },
+                "authorization": {
+                    "type": "string",
+                    "description": "Optional Authorization header value, e.g. "
+                    "'Bearer <token>', to probe authenticated surface.",
+                },
+                "extra_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional extra paths to probe beyond the "
+                    "default wordlist.",
+                },
+            },
+            "required": ["base_url"],
         },
     },
     {
@@ -174,6 +208,8 @@ class ToolRegistry:
                 )
             if name == "port_scan":
                 return self._port_scan(tool_input)
+            if name == "endpoint_scan":
+                return self._endpoint_scan(tool_input)
             if name == "ai_probe":
                 return self._ai_probe(tool_input)
             return (f"unknown tool '{name}'", True)
@@ -209,6 +245,29 @@ class ToolRegistry:
             bool(args.get("service_detection", True)),
         )
         self._log("port_scan", {**args, "ip": decision.resolved_ip}, "ok")
+        return (json.dumps(result, default=str), False)
+
+    def _endpoint_scan(self, args: dict[str, Any]) -> tuple[str, bool]:
+        base_url = args["base_url"]
+        decision = self.enforcer.check_active(base_url, is_url=True)
+        if not decision.allowed:
+            self._log("endpoint_scan", {"base_url": base_url}, "REFUSED")
+            return (decision.reason, True)
+        endpoints = list(API_ENDPOINTS)
+        extra = args.get("extra_paths") or []
+        if extra:
+            endpoints += [str(p) for p in extra]
+        result = infra.endpoint_scan(
+            base_url,
+            endpoints,
+            authorization=args.get("authorization", ""),
+            throttle=self.enforcer.throttle,
+        )
+        self._log(
+            "endpoint_scan",
+            {"base_url": base_url, "paths": len(endpoints)},
+            "ok",
+        )
         return (json.dumps(result, default=str), False)
 
     def _ai_probe(self, args: dict[str, Any]) -> tuple[str, bool]:

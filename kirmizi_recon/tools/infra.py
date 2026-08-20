@@ -16,7 +16,8 @@ import socket
 import ssl
 import subprocess
 import xml.etree.ElementTree as ET
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import urljoin
 
 import httpx
 
@@ -424,3 +425,114 @@ def _grab_banner(sock: socket.socket, port: int, timeout: float) -> str:
         return data.decode("utf-8", "replace").strip()[:200]
     except OSError:
         return ""
+
+
+# ---------------------------------------------------------------------------
+# API / endpoint enumeration (directory brute-force)
+# ---------------------------------------------------------------------------
+
+_ENDPOINT_MAX_PATHS = 2000
+_ENDPOINT_INTERESTING_CAP = 400
+
+
+def normalize_base_url(url: str) -> str:
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url.rstrip("/") + "/"
+
+
+def endpoint_scan(
+    base_url: str,
+    endpoints: list[str],
+    *,
+    timeout: float = 8.0,
+    authorization: str = "",
+    workers: int = 8,
+    verify: bool = True,
+    throttle: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Probe a curated list of API/endpoint paths against a base URL and group
+    the HTTP responses. Redirects are NOT followed (a 3xx is itself a signal).
+    ``throttle`` (the scope rate limiter) is called before every request so the
+    scan honors the engagement's requests/sec cap. ACTIVE."""
+    base = normalize_base_url(base_url)
+    paths = endpoints[:_ENDPOINT_MAX_PATHS]
+    headers = {"User-Agent": _UA, "Accept": "application/json, text/plain, */*"}
+    if authorization:
+        headers["Authorization"] = authorization
+
+    workers = max(1, min(workers, 20))
+    client = httpx.Client(
+        timeout=timeout, verify=verify, follow_redirects=False, headers=headers
+    )
+
+    def probe(path: str) -> dict[str, Any]:
+        if throttle is not None:
+            throttle()
+        url = urljoin(base, path.lstrip("/"))
+        try:
+            resp = client.get(url)
+            return {
+                "path": path,
+                "status": resp.status_code,
+                "length": len(resp.content),
+                "server": resp.headers.get("server", ""),
+                "location": resp.headers.get("location", ""),
+            }
+        except httpx.HTTPError as exc:
+            return {"path": path, "status": "ERROR", "length": 0, "error": str(exc)[:120]}
+
+    results: list[dict[str, Any]] = []
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            results.extend(ex.map(probe, paths))
+    finally:
+        client.close()
+
+    return _group_endpoint_results(base, len(paths), results)
+
+
+def _group_endpoint_results(
+    base: str, probed: int, results: list[dict[str, Any]]
+) -> dict[str, Any]:
+    counts = {
+        "2xx": 0, "3xx": 0, "401": 0, "403": 0, "404": 0,
+        "405": 0, "5xx": 0, "other": 0, "error": 0,
+    }
+    interesting: list[dict[str, Any]] = []
+    for r in results:
+        status = r["status"]
+        if status == "ERROR":
+            counts["error"] += 1
+            continue
+        if 200 <= status < 300:
+            counts["2xx"] += 1
+        elif 300 <= status < 400:
+            counts["3xx"] += 1
+        elif status == 401:
+            counts["401"] += 1
+        elif status == 403:
+            counts["403"] += 1
+        elif status == 404:
+            counts["404"] += 1
+            continue  # 404 = not present; not interesting
+        elif status == 405:
+            counts["405"] += 1
+        elif 500 <= status < 600:
+            counts["5xx"] += 1
+        else:
+            counts["other"] += 1
+        interesting.append(r)
+
+    interesting.sort(key=lambda d: (d["status"], d["path"]))
+    return {
+        "base_url": base,
+        "probed": probed,
+        "counts": counts,
+        "interesting": interesting[:_ENDPOINT_INTERESTING_CAP],
+        "interesting_truncated": len(interesting) > _ENDPOINT_INTERESTING_CAP,
+        "note": "Redirects not followed. 'interesting' = every non-404, non-error "
+        "response (2xx/3xx/401/403/405/5xx). 401/403 usually mean the endpoint "
+        "exists but is protected.",
+    }

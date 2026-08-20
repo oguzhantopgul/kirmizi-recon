@@ -230,6 +230,11 @@ class ScopeEnforcer:
         refusal = self._consume_active()
         return refusal if refusal is not None else Decision(True, resolved_ip=ip)
 
+    def throttle(self) -> None:
+        """Block until the rate limiter permits one more request. Used by
+        multi-request tools (e.g. endpoint_scan) to pace their own traffic."""
+        self._bucket.acquire()
+
     # -- shared budget + rate limiting -----------------------------------
     def _consume_active(self) -> Decision | None:
         """Charge one active request against the budget and rate limiter.
