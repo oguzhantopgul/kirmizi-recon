@@ -10,6 +10,7 @@ in the registry.
 from __future__ import annotations
 
 import concurrent.futures
+import ipaddress
 import re
 import shutil
 import socket
@@ -17,7 +18,7 @@ import ssl
 import subprocess
 import xml.etree.ElementTree as ET
 from typing import Any, Callable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -121,16 +122,20 @@ def http_fingerprint(url: str) -> dict[str, Any]:
     if "://" not in url:
         url = "https://" + url
     result: dict[str, Any] = {"url": url}
+    origin = _origin(url)
     try:
+        # Redirects are NOT followed: a 3xx to an out-of-scope/internal host
+        # would escape the scope check performed on the original URL. We record
+        # the Location instead as a signal.
         with httpx.Client(
             timeout=_TIMEOUT,
             headers={"User-Agent": _UA},
-            follow_redirects=True,
+            follow_redirects=False,
             verify=True,
         ) as client:
             resp = client.get(url)
             result["status"] = resp.status_code
-            result["final_url"] = str(resp.url)
+            result["location"] = resp.headers.get("location", "")
             result["fingerprint_headers"] = {
                 h: resp.headers[h] for h in _FINGERPRINT_HEADERS if h in resp.headers
             }
@@ -141,13 +146,21 @@ def http_fingerprint(url: str) -> dict[str, Any]:
             title = re.search(r"<title[^>]*>(.*?)</title>", resp.text[:20000], re.I | re.S)
             result["title"] = title.group(1).strip() if title else ""
 
-            robots = client.get(str(resp.url).rstrip("/") + "/robots.txt")
+            # robots.txt from the same authorized origin only.
+            robots = client.get(origin + "/robots.txt")
             result["robots_txt"] = (
                 robots.text[:2000] if robots.status_code == 200 else f"(status {robots.status_code})"
             )
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
     return result
+
+
+def _origin(url: str) -> str:
+    """scheme://host[:port] for a URL (used to keep requests on the authorized
+    origin)."""
+    parts = urlsplit(url if "://" in url else "https://" + url)
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 def _cookie_names(set_cookies: list[str]) -> list[str]:
@@ -289,6 +302,14 @@ def port_scan(target_ip: str, ports: str = "top-100", service_detection: bool = 
     version detection) otherwise. ``target_ip`` must already be scope-authorized
     and resolved by the caller.
     """
+    # Defense-in-depth: the caller (check_scan) already resolves + authorizes an
+    # IP, but never pass a non-IP to nmap — an option-like string could be
+    # interpreted as an nmap flag even with shell=False.
+    try:
+        ipaddress.ip_address(target_ip)
+    except ValueError:
+        return {"target": target_ip, "error": "port_scan requires a resolved IP address"}
+
     try:
         kind, value = _normalize_ports(ports)
     except ValueError as exc:
@@ -463,14 +484,20 @@ def endpoint_scan(
         headers["Authorization"] = authorization
 
     workers = max(1, min(workers, 20))
+    base_origin = _origin(base)
     client = httpx.Client(
         timeout=timeout, verify=verify, follow_redirects=False, headers=headers
     )
 
     def probe(path: str) -> dict[str, Any]:
+        url = urljoin(base, path.lstrip("/"))
+        # Keep every request on the authorized origin. Model-supplied
+        # extra_paths could be absolute URLs ("http://evil/x") which urljoin
+        # would honor, escaping scope — skip anything off-origin.
+        if _origin(url) != base_origin:
+            return {"path": path, "status": "OFFHOST", "length": 0}
         if throttle is not None:
             throttle()
-        url = urljoin(base, path.lstrip("/"))
         try:
             resp = client.get(url)
             return {
@@ -498,11 +525,14 @@ def _group_endpoint_results(
 ) -> dict[str, Any]:
     counts = {
         "2xx": 0, "3xx": 0, "401": 0, "403": 0, "404": 0,
-        "405": 0, "5xx": 0, "other": 0, "error": 0,
+        "405": 0, "5xx": 0, "other": 0, "error": 0, "offhost_skipped": 0,
     }
     interesting: list[dict[str, Any]] = []
     for r in results:
         status = r["status"]
+        if status == "OFFHOST":
+            counts["offhost_skipped"] += 1
+            continue
         if status == "ERROR":
             counts["error"] += 1
             continue

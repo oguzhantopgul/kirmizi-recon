@@ -107,6 +107,15 @@ localhost/RFC-1918 targets you own). Requests are rate-limited
 out-of-scope active call is refused and surfaced to the agent as an error — the
 run continues with passive means instead of crashing.
 
+**SSRF / DNS-rebinding protection.** Active HTTP tools resolve the target host
+and **refuse if it resolves to a non-public IP** (loopback, RFC-1918,
+link-local incl. the cloud-metadata endpoint `169.254.169.254`, reserved) unless
+that internal address is explicitly authorized via `--trust-local` or an IP/CIDR
+in scope. Redirects are never followed (a 3xx to an internal host can't escape
+the scope check), and model-supplied endpoint paths are pinned to the authorized
+origin. This keeps a scoped *public* hostname from being used to pivot to
+internal services.
+
 ### `authorization` / SOW vs. model restrictions
 
 The `authorization` field records who authorized the test; it drives **our**

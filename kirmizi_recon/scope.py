@@ -54,6 +54,25 @@ def resolve_host(host: str) -> str:
         return ""
 
 
+def is_nonpublic_ip(ip: str) -> bool:
+    """True if an IP is not globally routable — loopback, RFC-1918 private,
+    link-local (incl. cloud metadata 169.254.169.254), reserved, multicast, or
+    unspecified. Requests to such addresses are the SSRF-to-internal target
+    class."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr.is_unspecified
+    )
+
+
 def ip_in_scope(ip: str, patterns: list[str]) -> bool:
     """True if ``ip`` falls within any IP or CIDR entry among the patterns.
     Non-IP (hostname) patterns are ignored here."""
@@ -75,7 +94,12 @@ def ip_in_scope(ip: str, patterns: list[str]) -> bool:
 
 
 def is_local_host(host: str) -> bool:
-    """True for localhost and RFC-1918 / loopback / link-local addresses."""
+    """True for localhost / loopback / RFC-1918 private addresses.
+
+    Deliberately EXCLUDES link-local (169.254.0.0/16): --trust-local is for
+    "local targets you own", and auto-authorizing link-local would let the agent
+    reach the cloud metadata endpoint (169.254.169.254) without an explicit
+    scope entry. To scan link-local, add it to in_scope."""
     if not host:
         return False
     host = host.lower()
@@ -97,7 +121,9 @@ def is_local_host(host: str) -> bool:
             ip = ipaddress.ip_address(cand)
         except ValueError:
             continue
-        if ip.is_loopback or ip.is_private or ip.is_link_local:
+        # Note: Python's is_private already includes link-local (169.254/16),
+        # so exclude it explicitly to keep the metadata endpoint out.
+        if (ip.is_loopback or ip.is_private) and not ip.is_link_local:
             return True
     return False
 
@@ -226,6 +252,58 @@ class ScopeEnforcer:
                 f"Add the host, its IP, or a CIDR to in_scope "
                 f"(current: {self.scope.in_scope or '[]'}).",
             )
+
+        refusal = self._consume_active()
+        return refusal if refusal is not None else Decision(True, resolved_ip=ip)
+
+    def check_http_target(self, url: str) -> Decision:
+        """Authorize an active HTTP(S) request. Beyond the normal scope check,
+        this resolves the host and REFUSES if it resolves to a non-public IP
+        (SSRF / DNS-rebinding protection) unless that internal address is
+        explicitly authorized via --trust-local or an IP/CIDR in scope.
+
+        Note: httpx re-resolves the hostname at connect time, so a determined
+        TTL-0 rebind flipping public↔internal between this check and the request
+        is a residual risk; this blocks the realistic misconfig/slow-rebind
+        cases and forces explicit authorization for any internal target."""
+        if self.scope.mode != "active":
+            return Decision(
+                False,
+                "refused: passive mode. Active HTTP probing requires --active plus "
+                "an in-scope, authorized target.",
+            )
+
+        host = host_from_url(url) if "://" in url else url.strip().lower().rstrip(".")
+        local_ok = self.scope.trust_local and is_local_host(host)
+        in_scope = (
+            local_ok
+            or url in self.scope.ai_endpoints
+            or any(host_matches(host, p) for p in self.scope.in_scope)
+            or (is_ip_literal(host) and ip_in_scope(host, self.scope.in_scope))
+        )
+        if not in_scope:
+            return Decision(
+                False,
+                f"refused: '{host}' is not in the authorized scope "
+                f"(in_scope={self.scope.in_scope or '[]'}).",
+            )
+
+        ip = resolve_host(host)
+        if not ip:
+            return Decision(False, f"refused: could not resolve '{host}' to an IP.")
+
+        if is_nonpublic_ip(ip):
+            authorized_internal = (
+                (self.scope.trust_local and is_local_host(ip))
+                or ip_in_scope(ip, self.scope.in_scope)
+            )
+            if not authorized_internal:
+                return Decision(
+                    False,
+                    f"refused: '{host}' resolves to non-public IP {ip} (possible "
+                    "SSRF / DNS rebinding). Authorize it explicitly with an IP/CIDR "
+                    "in in_scope, or --trust-local for local targets you own.",
+                )
 
         refusal = self._consume_active()
         return refusal if refusal is not None else Decision(True, resolved_ip=ip)

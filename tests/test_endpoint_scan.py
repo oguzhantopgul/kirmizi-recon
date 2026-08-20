@@ -1,4 +1,8 @@
-from kirmizi_recon.tools.infra import _group_endpoint_results, normalize_base_url
+from kirmizi_recon.tools.infra import (
+    _group_endpoint_results,
+    endpoint_scan,
+    normalize_base_url,
+)
 from kirmizi_recon.wordlists import API_ENDPOINTS, _dedupe, load_wordlist
 
 
@@ -51,6 +55,21 @@ def test_group_endpoint_results_classifies_and_hides_404():
     paths = [r["path"] for r in grouped["interesting"]]
     assert "/nope" not in paths and "/boom" not in paths  # 404 + error excluded
     assert set(paths) == {"/api", "/admin", "/api/users", "/secret", "/v1/chat/completions"}
+
+
+def test_endpoint_scan_skips_offhost_paths():
+    # A model-supplied absolute URL must NOT escape the authorized origin.
+    # 127.0.0.1:9 has nothing listening -> the on-origin path errors fast; the
+    # off-host path is skipped before any request is made.
+    result = endpoint_scan(
+        "http://127.0.0.1:9",
+        ["/", "http://evil.example.com/exfil", "//evil.example.com/x"],
+        timeout=2.0,
+        throttle=None,
+    )
+    assert result["counts"]["offhost_skipped"] == 1  # only the absolute URL
+    paths = [r["path"] for r in result["interesting"]]
+    assert "http://evil.example.com/exfil" not in paths
 
 
 def test_load_wordlist(tmp_path):

@@ -196,8 +196,8 @@ class ToolRegistry:
             if name == "rdap_lookup":
                 return self._ok(name, tool_input, infra.rdap_lookup(tool_input["domain"]))
             if name == "http_fingerprint":
-                return self._active(
-                    name, tool_input, tool_input["url"], is_url=True,
+                return self._http(
+                    name, tool_input, tool_input["url"],
                     run=lambda: infra.http_fingerprint(tool_input["url"]),
                 )
             if name == "tls_inspect":
@@ -233,6 +233,15 @@ class ToolRegistry:
             return (decision.reason, True)
         return self._ok(name, args, run())
 
+    def _http(self, name: str, args: dict[str, Any], url: str, run) -> tuple[str, bool]:
+        """Active HTTP(S) tools go through the SSRF-aware guard (resolves the
+        host and blocks non-public IPs unless explicitly authorized)."""
+        decision = self.enforcer.check_http_target(url)
+        if not decision.allowed:
+            self._log(name, args, "REFUSED")
+            return (decision.reason, True)
+        return self._ok(name, args, run())
+
     def _port_scan(self, args: dict[str, Any]) -> tuple[str, bool]:
         target = args["target"]
         decision = self.enforcer.check_scan(target)
@@ -249,7 +258,7 @@ class ToolRegistry:
 
     def _endpoint_scan(self, args: dict[str, Any]) -> tuple[str, bool]:
         base_url = args["base_url"]
-        decision = self.enforcer.check_active(base_url, is_url=True)
+        decision = self.enforcer.check_http_target(base_url)
         if not decision.allowed:
             self._log("endpoint_scan", {"base_url": base_url}, "REFUSED")
             return (decision.reason, True)
@@ -284,8 +293,8 @@ class ToolRegistry:
                 f"no matching AI endpoint. configured endpoints: {available or '[]'}",
                 True,
             )
-        return self._active(
-            "ai_probe", args, endpoint.url, is_url=True,
+        return self._http(
+            "ai_probe", args, endpoint.url,
             run=lambda: ai_target.ai_probe(endpoint, args["prompt"]),
         )
 

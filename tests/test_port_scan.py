@@ -5,7 +5,16 @@ from kirmizi_recon.tools.infra import (
     _expand_spec,
     _normalize_ports,
     _parse_nmap_xml,
+    port_scan,
 )
+
+
+def test_port_scan_rejects_non_ip():
+    # Defense-in-depth: only a resolved IP may reach nmap's argv.
+    out = port_scan("acme.example.com; rm -rf /")
+    assert "error" in out and "resolved IP" in out["error"]
+    out2 = port_scan("--script=vuln")
+    assert "error" in out2
 
 _SAMPLE_XML = b"""<?xml version="1.0"?>
 <nmaprun>

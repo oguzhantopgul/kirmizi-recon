@@ -37,6 +37,17 @@ def test_is_local_host_literals():
     assert is_local_host("10.0.0.5")
     assert is_local_host("192.168.1.1")
     assert not is_local_host("8.8.8.8")
+    # link-local (incl. cloud metadata) is NOT auto-authorized by trust_local
+    assert not is_local_host("169.254.169.254")
+
+
+def test_trust_local_excludes_link_local_metadata():
+    enf = ScopeEnforcer(
+        ReconScope(mode="active", trust_local=True, rate_limit_per_sec=1000.0)
+    )
+    # metadata endpoint must be refused unless explicitly scoped
+    assert not enf.check_active("169.254.169.254").allowed
+    assert not enf.check_scan("169.254.169.254").allowed
 
 
 def test_passive_always_allowed():
@@ -125,6 +136,44 @@ def test_check_scan_trust_local():
     )
     d = enf.check_scan("127.0.0.1")
     assert d.allowed and d.resolved_ip == "127.0.0.1"
+
+
+def test_check_http_target_blocks_scoped_host_resolving_to_internal():
+    # 'localhost' is in scope by name, but resolves to loopback (non-public).
+    # Without explicit internal authorization this must be refused (SSRF guard).
+    scope = ReconScope(
+        mode="active", in_scope=["localhost"], authorization="P-1", rate_limit_per_sec=1000.0
+    )
+    d = ScopeEnforcer(scope).check_http_target("http://localhost/")
+    assert not d.allowed
+    assert "non-public IP" in d.reason
+
+
+def test_check_http_target_allows_internal_when_authorized():
+    # trust_local authorizes it...
+    d1 = ScopeEnforcer(
+        ReconScope(mode="active", in_scope=["localhost"], trust_local=True, rate_limit_per_sec=1000.0)
+    ).check_http_target("http://localhost/")
+    assert d1.allowed and d1.resolved_ip == "127.0.0.1"
+
+    # ...or an explicit CIDR covering the resolved IP does.
+    d2 = ScopeEnforcer(
+        ReconScope(
+            mode="active",
+            in_scope=["localhost", "127.0.0.0/8"],
+            authorization="P-1",
+            rate_limit_per_sec=1000.0,
+        )
+    ).check_http_target("http://localhost/")
+    assert d2.allowed
+
+
+def test_check_http_target_allows_public_ip_and_refuses_passive():
+    scope = ReconScope(
+        mode="active", in_scope=["8.8.8.8"], authorization="P-1", rate_limit_per_sec=1000.0
+    )
+    assert ScopeEnforcer(scope).check_http_target("http://8.8.8.8/").allowed
+    assert not ScopeEnforcer(ReconScope(mode="passive")).check_http_target("http://8.8.8.8/").allowed
 
 
 def test_check_scan_budget_shared_with_active():

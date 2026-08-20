@@ -61,9 +61,13 @@ def ai_probe(endpoint: AITargetEndpoint, prompt: str) -> dict[str, Any]:
 
     headers = {"User-Agent": _UA, "Content-Type": "application/json", **endpoint.headers}
     try:
-        with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
+        # Do NOT follow redirects: endpoint headers may carry an Authorization
+        # token, and a 3xx would resend it to the redirect target's host.
+        with httpx.Client(timeout=_TIMEOUT, follow_redirects=False) as client:
             resp = client.request(endpoint.method, endpoint.url, json=body, headers=headers)
         result["status"] = resp.status_code
+        if 300 <= resp.status_code < 400:
+            result["redirect_location"] = resp.headers.get("location", "")
         raw_text = resp.text
         result["raw_response"] = raw_text[:_MAX_RAW]
         result["truncated"] = len(raw_text) > _MAX_RAW
