@@ -82,6 +82,10 @@ def main(
     effort: Optional[str] = typer.Option(None, "--effort", help="low|medium|high|xhigh|max."),
     max_turns: Optional[int] = typer.Option(None, "--max-turns", help="Agent loop cap."),
     no_web: bool = typer.Option(False, "--no-web", help="Disable server-side web search/fetch."),
+    collect_only: bool = typer.Option(
+        False, "--collect-only", help="Run only the deterministic collection phase "
+        "(no LLM, no API key) and output the raw evidence."
+    ),
     out: Optional[str] = typer.Option(None, "--out", help="Write <out>.recon.json and .md."),
     quiet: bool = typer.Option(False, "--quiet", help="Don't print the report to stdout."),
 ) -> None:
@@ -138,6 +142,27 @@ def main(
     except ValueError as exc:
         typer.secho(f"scope error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
+
+    # Deterministic collection only — no LLM, no API key.
+    if collect_only:
+        from . import collector
+        from .scope import ScopeEnforcer
+        from .tools import ToolRegistry
+
+        typer.secho(
+            f"[kirmizi-recon] collect-only mode={scope.mode} target={target.name}",
+            fg=typer.colors.CYAN,
+            err=True,
+        )
+        registry = ToolRegistry(target, ScopeEnforcer(scope))
+        evidence = collector.collect(target, scope, registry)
+        payload = evidence.to_prompt_json()
+        if out:
+            Path(f"{out}.evidence.json").write_text(payload)
+            typer.secho(f"wrote {out}.evidence.json", fg=typer.colors.GREEN, err=True)
+        if not quiet:
+            sys.stdout.write(payload + "\n")
+        raise typer.Exit(code=0)
 
     settings = Settings.from_env()
     if effort:

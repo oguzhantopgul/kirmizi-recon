@@ -12,9 +12,10 @@ from typing import Any
 
 import anthropic
 
+from . import collector
 from .config import Settings
-from .prompts import build_kickoff, build_system_prompt
-from .schemas import ReconReport, ReconScope, ReconTarget
+from .prompts import build_analysis_kickoff, build_system_prompt
+from .schemas import Evidence, ReconReport, ReconScope, ReconTarget
 from .scope import ScopeEnforcer
 from .tools import ToolRegistry
 from .tools.report import FINALIZE_TOOL_NAME, parse_finalize
@@ -35,16 +36,35 @@ class ReconAgent:
         self.client = client or anthropic.Anthropic()
 
     def run(self, target: ReconTarget, scope: ReconScope) -> ReconReport:
-        enforcer = ScopeEnforcer(scope)
-        registry = ToolRegistry(target, enforcer)
+        """Full recon: deterministic collection, then agentic analysis."""
+        registry = ToolRegistry(target, ScopeEnforcer(scope))
+        evidence = collector.collect(target, scope, registry)
+        return self.analyze(target, scope, evidence, registry=registry)
+
+    def collect(self, target: ReconTarget, scope: ReconScope) -> Evidence:
+        """Deterministic collection phase only — no LLM, no API key required."""
+        registry = ToolRegistry(target, ScopeEnforcer(scope))
+        return collector.collect(target, scope, registry)
+
+    def analyze(
+        self,
+        target: ReconTarget,
+        scope: ReconScope,
+        evidence: Evidence,
+        registry: ToolRegistry | None = None,
+    ) -> ReconReport:
+        """Agentic analysis phase: interpret pre-collected evidence, probe the AI
+        app adaptively, run targeted follow-ups, and synthesize the report."""
+        if registry is None:
+            registry = ToolRegistry(target, ScopeEnforcer(scope))
         system_prompt = build_system_prompt(target, scope)
         extra = _WEB_TOOLS if self.settings.enable_web else None
         tools = registry.tool_definitions(extra=extra)
 
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": build_kickoff(target)}
+            {"role": "user", "content": build_analysis_kickoff(target, evidence)}
         ]
-        errors: list[str] = []
+        errors: list[str] = list(evidence.errors)
         nudges = 0
 
         for _turn in range(self.settings.max_turns):

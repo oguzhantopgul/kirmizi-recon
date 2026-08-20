@@ -20,14 +20,23 @@ scope authorization.
 ReconAgent.run(target: ReconTarget, scope: ReconScope) -> ReconReport
 ```
 
-- **Interface-agnostic core** (`agent.py`). The CLI uses it today; an A2A
-  `AgentExecutor` can wrap the same method later. `ReconTarget` (in) /
+- **Two-phase: deterministic collect → agentic analyze.** A deterministic
+  `collect()` phase (`collector.py`) runs the broad scans in plain code — no LLM
+  — producing a structured `Evidence` bundle (fast, reproducible, no API key,
+  runnable standalone via `--collect-only`). The agentic `analyze()` phase is
+  *seeded* with that evidence and only does judgment work: interpretation,
+  **adaptive** `ai_probe` of the AI app, bounded targeted follow-up scans, and
+  report synthesis. The model reasons; it doesn't schedule fixed scans.
+  `Evidence` is also the clean seam for a future A2A collector → analyst split.
+- **Interface-agnostic core** (`agent.py`): `run()` = collect + analyze;
+  `collect()` and `analyze()` are also callable independently. The CLI uses them
+  today; an A2A `AgentExecutor` can wrap them later. `ReconTarget` (in) /
   `ReconReport` (out) are the stable contract.
 - **Claude is the judge, tools are data-gatherers.** Tools return raw evidence
   (DNS records, HTTP headers, TLS certs, target AI responses); Claude does the
   interpretation (model family, guardrails, prompt leakage).
-- **Manual agentic loop** for deterministic control over scope enforcement,
-  active-action gating, rate limiting, and `pause_turn` resumption.
+- **Manual agentic loop** (analyze phase) for deterministic control over scope
+  enforcement, active-action gating, rate limiting, and `pause_turn` resumption.
 - **Structured output** via a strict `finalize_report` tool derived from the
   report schema.
 
@@ -53,6 +62,15 @@ Passive recon (no traffic to the target):
 python -m kirmizi-recon -d example.com
 # or, once installed as a script:
 kirmizi-recon -d example.com
+```
+
+Deterministic collection only — the scan pipeline with **no LLM / no API key**,
+emitting the raw `Evidence` bundle as JSON:
+
+```bash
+kirmizi-recon -d example.com --collect-only
+kirmizi-recon -d acme.example.com --active --auth "SOW-1" --collect-only --out reports/acme
+# writes reports/acme.evidence.json
 ```
 
 Active recon — requires the `--active` flag **and** an authorized scope:
@@ -140,7 +158,8 @@ dependency is added yet — the core is already shaped for it.
 
 ```
 kirmizi_recon/
-  agent.py     # ReconAgent.run(): manual agentic loop
+  agent.py     # ReconAgent: run() = collect + analyze; analyze() is the agentic loop
+  collector.py # deterministic collection phase (collect() -> Evidence)
   schemas.py   # ReconTarget / ReconScope / ReconReport (the contract)
   scope.py     # fail-closed enforcement + rate limiter
   prompts.py   # cached system prompt (engagement framing)

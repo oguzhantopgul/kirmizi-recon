@@ -102,6 +102,31 @@ class ReconScope(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Deterministic collection output (the analyst phase consumes this)
+# ---------------------------------------------------------------------------
+
+
+class Evidence(BaseModel):
+    """Raw results from the deterministic collection phase, keyed by target.
+    This is the seam between collect() (no LLM) and analyze() (agentic) — and,
+    in a future multi-agent setup, between a collector agent and an analyst
+    agent over A2A."""
+
+    dns: dict[str, Any] = Field(default_factory=dict)
+    subdomains: dict[str, Any] = Field(default_factory=dict)
+    rdap: dict[str, Any] = Field(default_factory=dict)
+    port_scan: dict[str, Any] = Field(default_factory=dict)
+    http: dict[str, Any] = Field(default_factory=dict)
+    tls: dict[str, Any] = Field(default_factory=dict)
+    endpoints: dict[str, Any] = Field(default_factory=dict)
+    collection_log: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+    def to_prompt_json(self) -> str:
+        return self.model_dump_json(indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Output — findings payload (Claude fills this via the finalize_report tool)
 # ---------------------------------------------------------------------------
 

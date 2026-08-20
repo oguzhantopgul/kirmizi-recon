@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from kirmizi_recon.agent import ReconAgent
 from kirmizi_recon.config import Settings
-from kirmizi_recon.schemas import ReconScope, ReconTarget
+from kirmizi_recon.schemas import Evidence, ReconScope, ReconTarget
 
 
 def _tool_use(tool_id, name, tool_input):
@@ -69,7 +69,9 @@ def test_loop_refusal_then_finalize():
     target = ReconTarget(name="acme", domains=["example.com"])
     scope = ReconScope(mode="passive")
 
-    report = agent.run(target, scope)
+    # Call analyze() directly with a prebuilt (empty) Evidence — avoids the
+    # deterministic collection phase hitting the network in a unit test.
+    report = agent.analyze(target, scope, Evidence())
 
     assert report.target_name == "acme"
     assert report.objective_summary == "did recon"
@@ -99,5 +101,30 @@ def test_loop_nudges_then_reports_when_model_ends_without_finalize():
         settings=Settings(use_fallbacks=False, enable_web=False),
         client=FakeClient(responses),
     )
-    report = agent.run(ReconTarget(domains=["example.com"]), ReconScope())
+    report = agent.analyze(ReconTarget(domains=["example.com"]), ReconScope(), Evidence())
     assert report.objective_summary == "ok"
+
+
+def test_run_calls_collect_then_analyze(monkeypatch):
+    # run() should run the deterministic collect phase, then the agentic analyze
+    # phase. Stub collect to avoid the network; assert the seam is wired.
+    from kirmizi_recon import agent as agent_mod
+
+    called = {"collect": 0}
+
+    def fake_collect(target, scope, registry):
+        called["collect"] += 1
+        return Evidence(collection_log=["dns_lookup(example.com) -> ok"])
+
+    monkeypatch.setattr(agent_mod.collector, "collect", fake_collect)
+
+    responses = [
+        _resp("tool_use", [_tool_use("t1", "finalize_report", {"objective_summary": "done"})]),
+    ]
+    agent = ReconAgent(
+        settings=Settings(use_fallbacks=False, enable_web=False),
+        client=FakeClient(responses),
+    )
+    report = agent.run(ReconTarget(name="acme", domains=["example.com"]), ReconScope())
+    assert called["collect"] == 1
+    assert report.objective_summary == "done"
