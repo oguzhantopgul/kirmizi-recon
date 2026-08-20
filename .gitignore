@@ -13,6 +13,7 @@ env/
 .env
 engagement.yaml
 engagement.yml
+.DS_Store
 
 # Tooling
 .pytest_cache/
